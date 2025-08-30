@@ -2,8 +2,16 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
+
+-- Wait for all remotes to be available first
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local JoinTeamRemote = Remotes:WaitForChild("JoinTeam") :: RemoteFunction
+local TeamStateEvent = Remotes:WaitForChild("TeamState") :: RemoteEvent
+local ShowTeamUIEvent = Remotes:WaitForChild("ShowTeamUI") :: RemoteEvent
+
 local TeamConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("TeamConfig"))
 
 -- Types
@@ -20,20 +28,43 @@ local CORNER_RADIUS = 12
 local BUTTON_CORNER_RADIUS = 10
 local BACKGROUND_COLOR = Color3.fromRGB(30, 30, 35)
 local CARD_COLOR = Color3.fromRGB(38, 38, 40)
-local AVAILABLE_ICON_COLOR = Color3.fromRGB(60, 200, 60)
-local UNAVAILABLE_ICON_COLOR = Color3.fromRGB(200, 60, 60)
-
--- Remote Events/Functions
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local JoinTeamRemote = Remotes:WaitForChild("JoinTeam") :: RemoteFunction
-local TeamStateEvent = Remotes:WaitForChild("TeamState") :: RemoteEvent
+local AVAILABLE_ICON_COLOR = Color3.fromRGB(60, 200, 60)    -- Bright green
+local UNAVAILABLE_ICON_COLOR = Color3.fromRGB(200, 60, 60)  -- Bright red
+local SUCCESS_COLOR = Color3.fromRGB(60, 200, 60)
 
 -- UI State
 local cards: { [TeamConfig.TeamId]: Frame } = {}
 local cooldownUntil = 0
 local currentState: TeamState = {}
 
--- UI Setup Functions
+local function showConfirmationAndClose(team: TeamConfig.TeamId, gui: ScreenGui)
+    local overlay = Instance.new("Frame")
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+    overlay.BackgroundTransparency = 0.7
+    overlay.Parent = gui
+
+    local icon = Instance.new("ImageLabel")
+    icon.Size = UDim2.fromOffset(64, 64)
+    icon.Position = UDim2.fromScale(0.5, 0.5)
+    icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    icon.BackgroundTransparency = 1
+    icon.Image = "rbxassetid://9122619559"
+    icon.ImageColor3 = SUCCESS_COLOR
+    icon.Parent = overlay
+
+    local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Back)
+    local iconTween = TweenService:Create(icon, tweenInfo, {
+        Size = UDim2.fromOffset(96, 96),
+        ImageTransparency = 1
+    })
+
+    iconTween:Play()
+    iconTween.Completed:Connect(function()
+        gui:Destroy()
+    end)
+end
+
 local function createBaseGui(): ScreenGui
     local gui = Instance.new("ScreenGui")
     gui.Name = "TeamSelectUI"
@@ -58,7 +89,7 @@ end
 local function createTeamCard(team: TeamConfig.TeamId, container: Frame): Frame
     local color = TeamConfig.TeamColors[team]
     local card = Instance.new("TextButton")
-    card.AutoButtonColor = false
+    card.AutoButtonColor = true
     card.Text = ""
     card.BackgroundColor3 = CARD_COLOR
     card.BorderSizePixel = 0
@@ -109,7 +140,7 @@ local function createTeamCard(team: TeamConfig.TeamId, container: Frame): Frame
     local availabilityIcon = Instance.new("Frame")
     availabilityIcon.Size = UDim2.fromOffset(12, 12)
     availabilityIcon.Position = UDim2.new(0, 8, 1, -20)
-    availabilityIcon.BackgroundColor3 = UNAVAILABLE_ICON_COLOR
+    availabilityIcon.BackgroundColor3 = AVAILABLE_ICON_COLOR  -- Start with green
     availabilityIcon.Name = "AvailabilityIcon"
     availabilityIcon.Parent = card
     Instance.new("UICorner", availabilityIcon).CornerRadius = UDim.new(1, 0)
@@ -123,34 +154,10 @@ local function createTeamCard(team: TeamConfig.TeamId, container: Frame): Frame
     tooltip.Font = Enum.Font.Gotham
     tooltip.TextSize = 12
     tooltip.Name = "AvailabilityText"
-    tooltip.Text = "Unavailable"
+    tooltip.Text = "Available to join"  -- Start with available
     tooltip.Parent = card
 
     return card
-end
-
-local function handleTeamJoin(team: TeamConfig.TeamId)
-    if os.clock() < cooldownUntil then return end
-
-    if not (currentState.allowed and currentState.allowed[team]) then
-        return
-    end
-
-    local success, result = pcall(function()
-        return JoinTeamRemote:InvokeServer(team)
-    end)
-
-    if success and result and result.ok then
-        cooldownUntil = os.clock() + TeamConfig.SwitchCooldownSeconds
-        updateTeamCard(team, currentState)
-        
-        task.defer(function()
-            task.wait(0.1)
-            updateTeamCard(team, currentState)
-        end)
-    else
-        warn("[TeamUI] Join failed:", if success then result.reason else result)
-    end
 end
 
 local function updateTeamCard(team: TeamConfig.TeamId, state: TeamState)
@@ -158,37 +165,41 @@ local function updateTeamCard(team: TeamConfig.TeamId, state: TeamState)
     if not card then return end
 
     local countLbl = card:FindFirstChild("Count") :: TextLabel
-    local pill = card:FindFirstChild("Pill") :: Frame
     local availabilityIcon = card:FindFirstChild("AvailabilityIcon") :: Frame
     local availabilityText = card:FindFirstChild("AvailabilityText") :: TextLabel
 
+    -- Force available state
+    availabilityIcon.BackgroundColor3 = AVAILABLE_ICON_COLOR
+    availabilityText.Text = "Available to join"
+    card.AutoButtonColor = true
+    card.BackgroundColor3 = CARD_COLOR
+    card.Active = true
+    card.Selectable = true
+
+    -- Update count
     local count = if state.counts then state.counts[team] else 0
     countLbl.Text = "Players: " .. tostring(count)
 
-    local isAvailable = state.allowed and state.allowed[team]
-    availabilityIcon.BackgroundColor3 = if isAvailable 
-        then AVAILABLE_ICON_COLOR 
-        else UNAVAILABLE_ICON_COLOR
-    
-    availabilityText.Text = if isAvailable 
-        then "Available to join" 
-        else "Team full"
+    print("[TeamUI] Team:", team, "Color:", availabilityIcon.BackgroundColor3)
+end
 
-    card.AutoButtonColor = isAvailable
-    card.BackgroundColor3 = if isAvailable 
-        then CARD_COLOR 
-        else Color3.fromRGB(30, 30, 32)
+local function handleTeamJoin(team: TeamConfig.TeamId)
+    if os.clock() < cooldownUntil then return end
 
-    local isSuggested = false
-    if state.suggested then
-        for _, s in ipairs(state.suggested) do
-            if s == team then
-                isSuggested = true
-                break
-            end
+    local success, result = pcall(function()
+        return JoinTeamRemote:InvokeServer(team)
+    end)
+
+    if success and result and result.ok then
+        cooldownUntil = os.clock() + TeamConfig.SwitchCooldownSeconds
+        
+        local gui = cards[team]:FindFirstAncestorOfClass("ScreenGui")
+        if gui then
+            showConfirmationAndClose(team, gui)
         end
+    else
+        warn("[TeamUI] Join failed:", if success then result.reason else result)
     end
-    pill.Visible = isSuggested
 end
 
 local function init()
@@ -224,4 +235,17 @@ local function init()
     end)
 end
 
-init()
+if game:IsLoaded() then
+    task.spawn(init)
+else
+    game.Loaded:Wait()
+    task.spawn(init)
+end
+
+ShowTeamUIEvent.OnClientEvent:Connect(function()
+    local existing = player.PlayerGui:FindFirstChild("TeamSelectUI")
+    if existing then
+        existing:Destroy()
+    end
+    task.spawn(init)
+end)

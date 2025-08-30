@@ -38,12 +38,16 @@ local TeamStateEvent = Remotes:FindFirstChild("TeamState") or Instance.new("Remo
 TeamStateEvent.Name = "TeamState"
 TeamStateEvent.Parent = Remotes
 
+local ShowTeamUIEvent = Remotes:FindFirstChild("ShowTeamUI") or Instance.new("RemoteEvent")
+ShowTeamUIEvent.Name = "ShowTeamUI"
+ShowTeamUIEvent.Parent = Remotes
+
 -- State
 local lastSwitch: { [Player]: number } = {}
 
 -- Team counting and state functions
 local function getCounts(): { [TeamConfig.TeamId]: number }
-    local counts: { [TeamConfig.TeamId]: number } = {}
+    local counts = {}
     
     -- Initialize all teams to 0
     for _, team in ipairs(TeamConfig.Teams) do
@@ -53,20 +57,36 @@ local function getCounts(): { [TeamConfig.TeamId]: number }
     -- Count players in each team
     for _, player in ipairs(Players:GetPlayers()) do
         local team = player.Team
-        if team and table.find(TeamConfig.Teams, team.Name) then
-            counts[team.Name] = (counts[team.Name] or 0) + 1
+        if team and counts[team.Name] ~= nil then
+            counts[team.Name] += 1
         end
     end
-    
+
     return counts
+end
+
+local function getAllowedTeams(counts: { [TeamConfig.TeamId]: number }): { [TeamConfig.TeamId]: boolean }
+    local allowed = {}
+    local totalPlayers = #Players:GetPlayers()
+    
+    print("[TeamService] Total players:", totalPlayers)
+    print("[TeamService] Current counts:", counts)
+
+    -- Always make all teams available
+    for _, team in ipairs(TeamConfig.Teams) do
+        allowed[team] = true
+    end
+
+    print("[TeamService] Final allowed teams:", allowed)
+    return allowed
 end
 
 local function broadcastTeamState()
     local counts = getCounts()
-    local allowed = TeamConfig.getAllowedTeams(counts)
+    local allowed = getAllowedTeams(counts)
     local suggested = TeamConfig.getSuggestedTeams(counts)
     
-    print("[TeamService] Broadcasting counts:", counts) -- Debug line
+    print("[TeamService] Broadcasting state:", counts, allowed)
     
     TeamStateEvent:FireAllClients({
         counts = counts,
@@ -96,7 +116,7 @@ local function tryJoinTeam(player: Player, desired: TeamConfig.TeamId)
     end
 
     local counts = getCounts()
-    local allowed = TeamConfig.getAllowedTeams(counts)
+    local allowed = getAllowedTeams(counts)
     if not allowed[desired] then
         return { 
             ok = false, 
@@ -128,6 +148,10 @@ end
 Players.PlayerAdded:Connect(function(player: Player)
     lastSwitch[player] = -1e9
     task.spawn(broadcastTeamState)
+    
+    task.delay(1, function()
+        ShowTeamUIEvent:FireClient(player)
+    end)
 end)
 
 Players.PlayerRemoving:Connect(function(player: Player)
