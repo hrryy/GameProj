@@ -28,14 +28,52 @@ local CORNER_RADIUS = 12
 local BUTTON_CORNER_RADIUS = 10
 local BACKGROUND_COLOR = Color3.fromRGB(30, 30, 35)
 local CARD_COLOR = Color3.fromRGB(38, 38, 40)
-local AVAILABLE_ICON_COLOR = Color3.fromRGB(60, 200, 60)    -- Bright green
-local UNAVAILABLE_ICON_COLOR = Color3.fromRGB(200, 60, 60)  -- Bright red
+local AVAILABLE_ICON_COLOR = Color3.fromRGB(60, 200, 60)
+local UNAVAILABLE_ICON_COLOR = Color3.fromRGB(200, 60, 60)
 local SUCCESS_COLOR = Color3.fromRGB(60, 200, 60)
 
 -- UI State
 local cards: { [TeamConfig.TeamId]: Frame } = {}
 local cooldownUntil = 0
 local currentState: TeamState = {}
+
+local function createPlayerIcon(player: Player): Frame
+    local icon = Instance.new("Frame")
+    icon.Size = UDim2.fromOffset(28, 28)
+    icon.BackgroundColor3 = Color3.new(1, 1, 1)
+    icon.BackgroundTransparency = 1
+    icon.Name = "PlayerIcon_" .. player.UserId
+
+    local avatar = Instance.new("ImageLabel")
+    avatar.Size = UDim2.fromScale(1, 1)
+    avatar.BackgroundTransparency = 1
+    avatar.Image = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+    avatar.Parent = icon
+    Instance.new("UICorner", avatar).CornerRadius = UDim.new(0.5, 0)
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0, 100, 0, 20)
+    nameLabel.Position = UDim2.new(0.5, 0, -1, -5)
+    nameLabel.AnchorPoint = Vector2.new(0.5, 0)
+    nameLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    nameLabel.BackgroundTransparency = 0.2
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.Text = player.DisplayName
+    nameLabel.TextSize = 12
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.Visible = false
+    nameLabel.Parent = icon
+    Instance.new("UICorner", nameLabel).CornerRadius = UDim.new(0.3, 0)
+
+    icon.MouseEnter:Connect(function()
+        nameLabel.Visible = true
+    end)
+    icon.MouseLeave:Connect(function()
+        nameLabel.Visible = false
+    end)
+
+    return icon
+end
 
 local function showConfirmationAndClose(team: TeamConfig.TeamId, gui: ScreenGui)
     local overlay = Instance.new("Frame")
@@ -137,10 +175,24 @@ local function createTeamCard(team: TeamConfig.TeamId, container: Frame): Frame
     pillText.BackgroundTransparency = 1
     pillText.Parent = pill
 
+    local playerContainer = Instance.new("Frame")
+    playerContainer.Size = UDim2.new(1, -16, 0, 32)
+    playerContainer.Position = UDim2.new(0, 8, 1, -60)
+    playerContainer.BackgroundTransparency = 1
+    playerContainer.Name = "PlayerContainer"
+    playerContainer.Parent = card
+
+    local playerLayout = Instance.new("UIGridLayout")
+    playerLayout.CellSize = UDim2.fromOffset(28, 28)
+    playerLayout.CellPadding = UDim2.fromOffset(4, 4)
+    playerLayout.FillDirection = Enum.FillDirection.Horizontal
+    playerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    playerLayout.Parent = playerContainer
+
     local availabilityIcon = Instance.new("Frame")
     availabilityIcon.Size = UDim2.fromOffset(12, 12)
     availabilityIcon.Position = UDim2.new(0, 8, 1, -20)
-    availabilityIcon.BackgroundColor3 = AVAILABLE_ICON_COLOR  -- Start with green
+    availabilityIcon.BackgroundColor3 = AVAILABLE_ICON_COLOR
     availabilityIcon.Name = "AvailabilityIcon"
     availabilityIcon.Parent = card
     Instance.new("UICorner", availabilityIcon).CornerRadius = UDim.new(1, 0)
@@ -154,7 +206,7 @@ local function createTeamCard(team: TeamConfig.TeamId, container: Frame): Frame
     tooltip.Font = Enum.Font.Gotham
     tooltip.TextSize = 12
     tooltip.Name = "AvailabilityText"
-    tooltip.Text = "Available to join"  -- Start with available
+    tooltip.Text = "Available to join"
     tooltip.Parent = card
 
     return card
@@ -168,23 +220,49 @@ local function updateTeamCard(team: TeamConfig.TeamId, state: TeamState)
     local availabilityIcon = card:FindFirstChild("AvailabilityIcon") :: Frame
     local availabilityText = card:FindFirstChild("AvailabilityText") :: TextLabel
 
-    -- Force available state
-    availabilityIcon.BackgroundColor3 = AVAILABLE_ICON_COLOR
-    availabilityText.Text = "Available to join"
-    card.AutoButtonColor = true
-    card.BackgroundColor3 = CARD_COLOR
-    card.Active = true
-    card.Selectable = true
-
-    -- Update count
     local count = if state.counts then state.counts[team] else 0
     countLbl.Text = "Players: " .. tostring(count)
 
-    print("[TeamUI] Team:", team, "Color:", availabilityIcon.BackgroundColor3)
+    local isAvailable = if state.allowed then state.allowed[team] == true else true
+
+    availabilityIcon.BackgroundColor3 = if isAvailable 
+        then AVAILABLE_ICON_COLOR 
+        else UNAVAILABLE_ICON_COLOR
+    
+    availabilityText.Text = if isAvailable 
+        then "Available to join" 
+        else "Team full"
+
+    card.AutoButtonColor = isAvailable
+    card.BackgroundColor3 = if isAvailable 
+        then CARD_COLOR 
+        else Color3.fromRGB(30, 30, 32)
+    card.Active = isAvailable
+    card.Selectable = isAvailable
+
+    local playerContainer = card:FindFirstChild("PlayerContainer") :: Frame
+    if playerContainer then
+        for _, child in playerContainer:GetChildren() do
+            if child:IsA("Frame") then
+                child:Destroy()
+            end
+        end
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr.Team and plr.Team.Name == team then
+                local icon = createPlayerIcon(plr)
+                icon.Parent = playerContainer
+            end
+        end
+    end
 end
 
 local function handleTeamJoin(team: TeamConfig.TeamId)
     if os.clock() < cooldownUntil then return end
+
+    if not (currentState.allowed and currentState.allowed[team] == true) then
+        return
+    end
 
     local success, result = pcall(function()
         return JoinTeamRemote:InvokeServer(team)

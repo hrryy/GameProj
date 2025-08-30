@@ -12,6 +12,7 @@ local TEAM_COLORS = {
     Green = BrickColor.new("Bright green"),
     Yellow = BrickColor.new("New Yeller")
 }
+local MAX_PLAYERS_PER_TEAM = 4
 
 -- Initialize teams
 for teamName, teamColor in pairs(TEAM_COLORS) do
@@ -69,15 +70,40 @@ local function getAllowedTeams(counts: { [TeamConfig.TeamId]: number }): { [Team
     local allowed = {}
     local totalPlayers = #Players:GetPlayers()
     
-    print("[TeamService] Total players:", totalPlayers)
-    print("[TeamService] Current counts:", counts)
-
-    -- Always make all teams available
-    for _, team in ipairs(TeamConfig.Teams) do
-        allowed[team] = true
+    -- First check team size limits
+    for team, count in counts do
+        allowed[team] = count < MAX_PLAYERS_PER_TEAM
     end
 
-    print("[TeamService] Final allowed teams:", allowed)
+    -- Get minimum and maximum team counts
+    local minCount = math.huge
+    local maxCount = 0
+    for _, count in counts do
+        minCount = math.min(minCount, count)
+        maxCount = math.max(maxCount, count)
+    end
+
+    -- Only allow teams that wouldn't create imbalance
+    for team, count in counts do
+        -- A team is available if it's under max players and at minimum count
+        if allowed[team] then
+            allowed[team] = count <= minCount
+        end
+    end
+
+    -- If no teams are available (all full/imbalanced), keep all unavailable
+    local hasAvailable = false
+    for _, isAllowed in allowed do
+        if isAllowed then
+            hasAvailable = true
+            break
+        end
+    end
+
+    -- Debug logging
+    print("[TeamService] Team counts:", counts)
+    print("[TeamService] Team availability:", allowed)
+    
     return allowed
 end
 
@@ -85,8 +111,6 @@ local function broadcastTeamState()
     local counts = getCounts()
     local allowed = getAllowedTeams(counts)
     local suggested = TeamConfig.getSuggestedTeams(counts)
-    
-    print("[TeamService] Broadcasting state:", counts, allowed)
     
     TeamStateEvent:FireAllClients({
         counts = counts,
@@ -116,6 +140,14 @@ local function tryJoinTeam(player: Player, desired: TeamConfig.TeamId)
     end
 
     local counts = getCounts()
+    if counts[desired] >= MAX_PLAYERS_PER_TEAM then
+        return {
+            ok = false,
+            reason = "TeamFull",
+            counts = counts
+        }
+    end
+
     local allowed = getAllowedTeams(counts)
     if not allowed[desired] then
         return { 
@@ -130,10 +162,7 @@ local function tryJoinTeam(player: Player, desired: TeamConfig.TeamId)
     player.Team = team
     lastSwitch[player] = now
     
-    task.defer(function()
-        task.wait(0.1)
-        broadcastTeamState()
-    end)
+    task.spawn(broadcastTeamState)
     
     return { ok = true, team = desired }
 end
